@@ -18,15 +18,42 @@ TABELA_SUSPEITO_ = TABELA_SUSPEITO.split()[0]
 class JogoDetetive:
 
     def __init__(self):
-        self.MENU = { 
-            1: self.Casos_em_Aberto,
-        }
         self.crime_id      = 0
         self.offset        = 0
         self.qtd_registros = 0
         self.trabalhando = True
         self.ultima_func = None
-        self.rascunho: pd.DataFrame = None
+        self.rascunho: pd.DataFrame = None  # [To-Do] >>> Gravar o progresso do "tenente Falcão"
+        # ^^^^^^^^^^^^^------------------------------- self.verifica_progresso(...)
+        self.listando_casos: bool = False
+        self.libera_opcoes()
+    
+    def configurar_paginacao(self, funcao: callable):
+        DEPOIMENTO_JOIN = f"{TABELA_DEPOIMENTO} JOIN {TABELA_SUSPEITO} ON (d.suspeito = s.id)"
+        FUNCOES_NAVEGAVEIS = {
+            self.Casos_em_Aberto:            TABELA_CRIME,
+            self.Identifica_Suspeitos:       TABELA_SUSPEITO,
+            self.Alibi_dos_Suspeitos:        DEPOIMENTO_JOIN,
+            self.Possivel_arma_do_Crime:     TABELA_OBJETO,
+            self.Depoimentos_inconsistentes: DEPOIMENTO_JOIN,
+        }
+        tabela = FUNCOES_NAVEGAVEIS.get(funcao)
+        if not tabela:
+            return
+        self.ultima_func = funcao
+        self.listando_casos = (funcao == self.Casos_em_Aberto)
+        self.libera_opcoes()
+        self.faz_contagem(tabela)
+        self.barra_progresso()
+        self.offset = 0
+
+    def faz_contagem(self, tabela: str):
+        # ---- ATENÇÃO: Forma genérica de contar registros ---
+        # Para alguns casos, a query deveria ser + complexa...
+        query = f"SELECT Count(*) FROM {tabela}"
+        if not self.listando_casos:
+            query += f" WHERE crime = {self.crime_id}"
+        self.qtd_registros = duckdb.sql(query).fetchone()[0]
 
     def verifica_progresso(self):
         [f for f in os.listdir(PASTA_DADOS) if f.endswith('.parquet')]
@@ -39,31 +66,42 @@ class JogoDetetive:
                 3: self.Alibi_dos_Suspeitos,
                 4: self.Possivel_arma_do_Crime,
                 5: self.Depoimentos_inconsistentes,
+                8: self.Refaz_Anotacoes, # <<<------------- [To-Do] Gravar num arquivo CSV...
             }
+        if self.listando_casos:
+            self.MENU |= {6: self.Pegar_um_caso}
         if self.ultima_func:
-            if self.ultima_func == self.Casos_em_Aberto:
-                self.MENU |= {6: self.Pegar_um_caso}
             self.MENU |= {7: self.Mais_Resultados}
         self.MENU |= {0: self.Sair}
     
+    def Refaz_Anotacoes(self):
+        """Baseado na última consulta, refaz as anotações do caso (🚧👷🏼‍♂️ EM CONSTRUÇÃO 👷🏼‍♀️🏗️)"""
+        return self.rascunho
+
     def Mais_Resultados(self):
         """Mostra mais resultados da última consulta"""
         self.offset += PAGINA_DADOS
         pagina_final = self.qtd_registros - PAGINA_DADOS
         res = self.ultima_func()
+        self.barra_progresso()
         if self.offset >= pagina_final:
-            self.offset = 0
-            self.ultima_func = None
-            self.libera_opcoes()
+            self.limpa_offset()
         return res
+
+    def limpa_offset(self):
+        self.offset = 0
+        self.ultima_func = None
+        self.libera_opcoes()
 
     def barra_progresso(self):
         pos_atual = self.offset + PAGINA_DADOS
         pct: int = round(
             PAGINA_DADOS * pos_atual / self.qtd_registros
         )
-        formato = '[{:<' + str(PAGINA_DADOS) + '}]'
-        print( formato.format('■'*pct) )
+        print( '[{}{}]'.format(
+            '■'*pct,
+            (PAGINA_DADOS - pct) * ' '
+        ))
 
     def proximo_offset(self) -> str:
         return f'LIMIT {PAGINA_DADOS} OFFSET {self.offset}'
@@ -73,11 +111,13 @@ class JogoDetetive:
         self.crime_id = 0
         while not self.crime_id:
             try:
-                self.crime_id = int( input('Qual caso você vai pegar?') )
+                self.crime_id = int( input('Qual caso você vai pegar? ') )
             except ValueError:
                 print('Este não parece um número de caso. 😒')
         self.mostra_caso_escolhido()
-        self.Casos_em_Aberto(True)
+        self.listando_casos = False
+        self.limpa_offset()        
+        return self.Casos_em_Aberto(True)
 
     def Casos_em_Aberto(self, filtrar_crime: bool=False):
         """Listar os casos em aberto"""
@@ -94,15 +134,9 @@ class JogoDetetive:
             query += f"WHERE c.id = {self.crime_id}"  
             # O caso atual ----------------^^^
         else:
-            self.qtd_registros = duckdb.sql(
-                f"SELECT Count(*) FROM {TABELA_CRIME}"
-            ).fetchone()[0]
             query += 'ORDER BY c.id ' + self.proximo_offset()
         # -------------------------------------------------
         res = duckdb.sql(query)
-        self.ultima_func = self.Casos_em_Aberto
-        self.libera_opcoes()
-        self.barra_progresso()
         return res
     
     def mostra_caso_escolhido(self):
@@ -129,10 +163,12 @@ class JogoDetetive:
                     d.ocorrencia = c.ocorrencia AND
                     d.local <> c.local
         """
+        query += self.proximo_offset()
         return duckdb.sql(query)
 
     def Identifica_Suspeitos(self):
         """Mostra as pessoas parecidas com a descrição do suspeito"""
+        # --------------------------------------------------------------
         query = f"""
             SELECT
                     p.id, p.nome, 
@@ -159,8 +195,8 @@ class JogoDetetive:
                     s.crime = {self.crime_id}
             ORDER BY
                     p.nome
-            LIMIT {PAGINA_DADOS}
         """
+        query += self.proximo_offset()
         return duckdb.sql(query)
 
     def Possivel_arma_do_Crime(self):
@@ -177,6 +213,7 @@ class JogoDetetive:
                     c.lesao = o.lesao AND
                     o.crime = {self.crime_id}
         """
+        query += self.proximo_offset()
         return duckdb.sql(query)
 
     def Depoimentos_inconsistentes(self):
@@ -226,6 +263,7 @@ class JogoDetetive:
             desvio_padrao('peso', 'd1')
         ]
         query = '\nUNION ALL\n'.join(lista)
+        # query += self.proximo_offset()
         return duckdb.sql(query)
 
     def Sair(self):
@@ -264,18 +302,19 @@ class JogoDetetive:
             print('Opções:'.center(50, '='))
             for op, func in self.MENU.items():
                 print(f'{op} - {func.__doc__.strip()}')
-            opcao = input('\n ... O que deseja fazer? ')
+            opcao = input('\n ... O que deseja fazer?🤔 ')
             try:
                 funcao = self.MENU[ int(opcao) ]
             except ValueError:
-                print(",.-~*´¨¯¨`*·~-._-(_Você deve digitar um NÚMERO._)-,.-~*´¨¯¨`*·~-.¸")
+                print(",.-~*´¨¯¨`*·~-._-( ❌ Você deve digitar um NÚMERO.)-,.-~*´¨¯¨`*·~-.¸")
                 continue
             except KeyError:
-                print(",.-~*´¨¯¨`*·~-._-( Esta opção não existe. )-,.-~*´¨¯¨`*·~-.¸")
+                print(",.-~*´¨¯¨`*·~-._-( ❌ Esta opção não existe. )-,.-~*´¨¯¨`*·~-.¸")
                 continue
             print('°º¤ø,_,ø¤º°`°º¤ø, {} ,ø¤°º¤ø,_,ø¤º°`°º¤ø,_'.format(
                 funcao.__name__
             ))
+            self.configurar_paginacao(funcao)
             print( funcao() )
 
 
