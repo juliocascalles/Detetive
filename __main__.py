@@ -1,8 +1,11 @@
-import duckdb
+import os
 import re
+import duckdb
+import pandas as pd
 
 
 PASTA_DADOS = './Detetive/'
+PAGINA_DADOS = 10
 
 TABELA_DEPOIMENTO = f"'{PASTA_DADOS}Depoimento.parquet' d"
 TABELA_PESSOA     = f"'{PASTA_DADOS}Pessoa.parquet'     p"
@@ -18,43 +21,94 @@ class JogoDetetive:
         self.MENU = { 
             1: self.Casos_em_Aberto,
         }
-        self.crime_id = 0
+        self.crime_id      = 0
+        self.offset        = 0
+        self.qtd_registros = 0
         self.trabalhando = True
+        self.ultima_func = None
+        self.rascunho: pd.DataFrame = None
+
+    def verifica_progresso(self):
+        [f for f in os.listdir(PASTA_DADOS) if f.endswith('.parquet')]
 
     def libera_opcoes(self):
-        self.MENU = {
-            1: self.Casos_em_Aberto,
-            2: self.Identifica_Suspeitos,
-            3: self.Alibi_dos_Suspeitos,
-            4: self.Possivel_arma_do_Crime,
-            5: self.Depoimentos_inconsistentes,
-            0: self.Sair,
-        }
+        self.MENU = {1: self.Casos_em_Aberto}
+        if self.crime_id:
+            self.MENU |= {
+                2: self.Identifica_Suspeitos,
+                3: self.Alibi_dos_Suspeitos,
+                4: self.Possivel_arma_do_Crime,
+                5: self.Depoimentos_inconsistentes,
+            }
+        if self.ultima_func:
+            if self.ultima_func == self.Casos_em_Aberto:
+                self.MENU |= {6: self.Pegar_um_caso}
+            self.MENU |= {7: self.Mais_Resultados}
+        self.MENU |= {0: self.Sair}
     
-    def Casos_em_Aberto(self):
+    def Mais_Resultados(self):
+        """Mostra mais resultados da última consulta"""
+        self.offset += PAGINA_DADOS
+        pagina_final = self.qtd_registros - PAGINA_DADOS
+        res = self.ultima_func()
+        if self.offset >= pagina_final:
+            self.offset = 0
+            self.ultima_func = None
+            self.libera_opcoes()
+        return res
+
+    def barra_progresso(self):
+        pos_atual = self.offset + PAGINA_DADOS
+        pct: int = round(
+            PAGINA_DADOS * pos_atual / self.qtd_registros
+        )
+        formato = '[{:<' + str(PAGINA_DADOS) + '}]'
+        print( formato.format('■'*pct) )
+
+    def proximo_offset(self) -> str:
+        return f'LIMIT {PAGINA_DADOS} OFFSET {self.offset}'
+
+    def Pegar_um_caso(self):
+        """Escolher um caso para trabalhar"""
+        self.crime_id = 0
+        while not self.crime_id:
+            try:
+                self.crime_id = int( input('Qual caso você vai pegar?') )
+            except ValueError:
+                print('Este não parece um número de caso. 😒')
+        self.mostra_caso_escolhido()
+        self.Casos_em_Aberto(True)
+
+    def Casos_em_Aberto(self, filtrar_crime: bool=False):
         """Listar os casos em aberto"""
+        # -------------------------------------------------
         query = f"""
             SELECT
                 c.id as caso, p.nome as vitima,
                 c.ocorrencia, c.local, c.lesao
             FROM {TABELA_CRIME}
                 JOIN {TABELA_PESSOA} ON (c.vitima = p.id)
+                
         """
-        res = duckdb.sql(query+'\n LIMIT 10')
-        print(res)
-        escolha = 0
-        while escolha in (0, self.crime_id):
-            try:
-                escolha = int( input('Qual caso você vai pegar?') )
-            except ValueError:
-                print('Este não parece um número de caso. 😒')
-        self.crime_id = escolha
-        query += f"""
-            WHERE c.id = {self.crime_id}
-        """
-        print('°º¤ø,_,ø¤º°`°º¤ø, Caso escolhido: ,ø¤°º¤ø,_,ø¤º°`°º¤ø,_')
+        if filtrar_crime:
+            query += f"WHERE c.id = {self.crime_id}"  
+            # O caso atual ----------------^^^
+        else:
+            self.qtd_registros = duckdb.sql(
+                f"SELECT Count(*) FROM {TABELA_CRIME}"
+            ).fetchone()[0]
+            query += 'ORDER BY c.id ' + self.proximo_offset()
+        # -------------------------------------------------
+        res = duckdb.sql(query)
+        self.ultima_func = self.Casos_em_Aberto
         self.libera_opcoes()
-        return duckdb.sql(query)
+        self.barra_progresso()
+        return res
+    
+    def mostra_caso_escolhido(self):
+        print('░░░▒▒▒▓▓▓ Caso {}: ▓▓▓▒▒▒░░░'.format(
+            self.crime_id
+        ))
 
     def Alibi_dos_Suspeitos(self):
         """Retorna quais suspeitos tem álibi para a hora do crime"""
@@ -105,6 +159,7 @@ class JogoDetetive:
                     s.crime = {self.crime_id}
             ORDER BY
                     p.nome
+            LIMIT {PAGINA_DADOS}
         """
         return duckdb.sql(query)
 
@@ -185,7 +240,7 @@ class JogoDetetive:
                           /___/                   /_/                        
         '''
 
-    def mostra_menu(self):
+    def executa(self):
         print("""
             ██████╗ ███████╗████████╗███████╗████████╗██╗██╗   ██╗███████╗
             ██╔══██╗██╔════╝╚══██╔══╝██╔════╝╚══██╔══╝██║██║   ██║██╔════╝
@@ -206,6 +261,7 @@ class JogoDetetive:
 
         ''')
         while self.trabalhando:
+            print('Opções:'.center(50, '='))
             for op, func in self.MENU.items():
                 print(f'{op} - {func.__doc__.strip()}')
             opcao = input('\n ... O que deseja fazer? ')
@@ -217,12 +273,14 @@ class JogoDetetive:
             except KeyError:
                 print(",.-~*´¨¯¨`*·~-._-( Esta opção não existe. )-,.-~*´¨¯¨`*·~-.¸")
                 continue
-            print('░░░▒▒▒▓▓▓ ', funcao.__name__, '▓▓▓▒▒▒░░░')
+            print('°º¤ø,_,ø¤º°`°º¤ø, {} ,ø¤°º¤ø,_,ø¤º°`°º¤ø,_'.format(
+                funcao.__name__
+            ))
             print( funcao() )
 
 
 
 if __name__ == '__main__':
     jogo = JogoDetetive()
-    jogo.mostra_menu()
+    jogo.executa()
  
