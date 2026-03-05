@@ -2,10 +2,11 @@ import os
 import re
 import duckdb
 import pandas as pd
+from enum import Enum
 
 
-PASTA_DADOS = './Detetive/'
-PAGINA_DADOS = 10
+PASTA_DADOS   = './Detetive/'
+PAGINA_DADOS  = 10
 
 TABELA_DEPOIMENTO = f"'{PASTA_DADOS}Depoimento.parquet' d"
 TABELA_PESSOA     = f"'{PASTA_DADOS}Pessoa.parquet'     p"
@@ -13,6 +14,15 @@ TABELA_OBJETO     = f"'{PASTA_DADOS}Objeto.parquet'     o"
 TABELA_CRIME      = f"'{PASTA_DADOS}Crime.parquet'      c"
 TABELA_SUSPEITO   = f"'{PASTA_DADOS}Suspeito.parquet'   s"
 TABELA_SUSPEITO_ = TABELA_SUSPEITO.split()[0]
+
+ARQUIVO_ANOTACOES = f'{PASTA_DADOS}/anotacoes.csv'
+
+
+
+class Filtro(Enum):
+    NENHUM     = 0
+    CASO_ATUAL = 1
+    CONTAGEM   = 2
 
 
 class JogoDetetive:
@@ -24,57 +34,51 @@ class JogoDetetive:
         self.trabalhando = True
         self.ultima_func = None
         self.rascunho: pd.DataFrame = None  # [To-Do] >>> Gravar o progresso do "tenente Falcão"
-        # ^^^^^^^^^^^^^------------------------------- self.verifica_progresso(...)
+        # ^^^^^^^^^^^^^------------------------------- self.carrega_anotacoes(...)
         self.listando_casos: bool = False
-        self.libera_opcoes()
+        self.carrega_anotacoes()
+        self.habilita_opcoes()
     
     def configurar_paginacao(self, funcao: callable):
-        DEPOIMENTO_JOIN = f"{TABELA_DEPOIMENTO} JOIN {TABELA_SUSPEITO} ON (d.suspeito = s.id)"
-        FUNCOES_NAVEGAVEIS = {
-            self.Casos_em_Aberto:            TABELA_CRIME,
-            self.Identifica_Suspeitos:       TABELA_SUSPEITO,
-            self.Alibi_dos_Suspeitos:        DEPOIMENTO_JOIN,
-            self.Possivel_arma_do_Crime:     TABELA_OBJETO,
-            self.Depoimentos_inconsistentes: DEPOIMENTO_JOIN,
-        }
-        tabela = FUNCOES_NAVEGAVEIS.get(funcao)
-        if not tabela:
+        FUNCOES_NAVEGAVEIS = [
+            self.Casos_em_Aberto,
+            self.Identifica_Suspeitos,
+            self.Alibi_dos_Suspeitos,
+            self.Possivel_arma_do_Crime,
+            self.Depoimentos_inconsistentes,
+        ]
+        if funcao not in FUNCOES_NAVEGAVEIS:
             return
         self.ultima_func = funcao
         self.listando_casos = (funcao == self.Casos_em_Aberto)
-        self.libera_opcoes()
-        self.faz_contagem(tabela)
+        self.habilita_opcoes()
+        self.qtd_registros = funcao(Filtro.CONTAGEM).fetchone()[0]
         self.barra_progresso()
         self.offset = 0
 
-    def faz_contagem(self, tabela: str):
-        # ---- ATENÇÃO: Forma genérica de contar registros ---
-        # Para alguns casos, a query deveria ser + complexa...
-        query = f"SELECT Count(*) FROM {tabela}"
-        if not self.listando_casos:
-            query += f" WHERE crime = {self.crime_id}"
-        self.qtd_registros = duckdb.sql(query).fetchone()[0]
+    def carrega_anotacoes(self):
+        if os.path.exists(ARQUIVO_ANOTACOES):
+            self.rascunho = pd.read_csv(ARQUIVO_ANOTACOES)
 
-    def verifica_progresso(self):
-        [f for f in os.listdir(PASTA_DADOS) if f.endswith('.parquet')]
-
-    def libera_opcoes(self):
+    def habilita_opcoes(self):
         self.MENU = {1: self.Casos_em_Aberto}
         if self.crime_id:
             self.MENU |= {
                 2: self.Identifica_Suspeitos,
                 3: self.Alibi_dos_Suspeitos,
                 4: self.Possivel_arma_do_Crime,
-                5: self.Depoimentos_inconsistentes,
-                8: self.Refaz_Anotacoes, # <<<------------- [To-Do] Gravar num arquivo CSV...
+                5: self.Depoimentos_inconsistentes,                
             }
         if self.listando_casos:
             self.MENU |= {6: self.Pegar_um_caso}
         if self.ultima_func:
             self.MENU |= {7: self.Mais_Resultados}
-        self.MENU |= {0: self.Sair}
+        self.MENU |= {
+            8: self.Elimina_Pistas_Falsas, # <<<------------- [To-Do] !!!!!!!!!
+            0: self.Sair
+        }
     
-    def Refaz_Anotacoes(self):
+    def Elimina_Pistas_Falsas(self):
         """Baseado na última consulta, refaz as anotações do caso (🚧👷🏼‍♂️ EM CONSTRUÇÃO 👷🏼‍♀️🏗️)"""
         return self.rascunho
 
@@ -91,13 +95,16 @@ class JogoDetetive:
     def limpa_offset(self):
         self.offset = 0
         self.ultima_func = None
-        self.libera_opcoes()
+        self.habilita_opcoes()
 
     def barra_progresso(self):
-        pos_atual = self.offset + PAGINA_DADOS
-        pct: int = round(
-            PAGINA_DADOS * pos_atual / self.qtd_registros
-        )
+        if self.qtd_registros < PAGINA_DADOS:
+            pct = PAGINA_DADOS
+        else:
+            pos_atual = self.offset + PAGINA_DADOS
+            pct: int = round(
+                PAGINA_DADOS * pos_atual / self.qtd_registros
+            )
         print( '[{}{}]'.format(
             '■'*pct,
             (PAGINA_DADOS - pct) * ' '
@@ -117,23 +124,30 @@ class JogoDetetive:
         self.mostra_caso_escolhido()
         self.listando_casos = False
         self.limpa_offset()        
-        return self.Casos_em_Aberto(True)
+        return self.Casos_em_Aberto(Filtro.CASO_ATUAL)
 
-    def Casos_em_Aberto(self, filtrar_crime: bool=False):
+    def Casos_em_Aberto(self, filtro: Filtro = Filtro.NENHUM):
         """Listar os casos em aberto"""
         # -------------------------------------------------
+        if filtro == Filtro.CONTAGEM:
+            CAMPOS = 'Count(*)'
+        else:
+            CAMPOS = '''
+                    c.id as caso, p.nome as vitima,
+                    c.ocorrencia, c.local, c.lesao
+            '''
+        # ---------------------------------------------------
         query = f"""
             SELECT
-                c.id as caso, p.nome as vitima,
-                c.ocorrencia, c.local, c.lesao
+                {CAMPOS}
             FROM {TABELA_CRIME}
                 JOIN {TABELA_PESSOA} ON (c.vitima = p.id)
                 
         """
-        if filtrar_crime:
+        if filtro == Filtro.CASO_ATUAL:
             query += f"WHERE c.id = {self.crime_id}"  
             # O caso atual ----------------^^^
-        else:
+        elif filtro == Filtro.NENHUM:
             query += 'ORDER BY c.id ' + self.proximo_offset()
         # -------------------------------------------------
         res = duckdb.sql(query)
@@ -144,79 +158,100 @@ class JogoDetetive:
             self.crime_id
         ))
 
-    def Alibi_dos_Suspeitos(self):
+    def Alibi_dos_Suspeitos(self, filtro: Filtro=Filtro.NENHUM):
         """Retorna quais suspeitos tem álibi para a hora do crime"""
+        # ------------------------------------------------------------
+        if filtro == Filtro.CONTAGEM:
+            CAMPOS = 'Count(*)'
+        else:
+            CAMPOS = """
+                c.local as local_crime,
+                d.suspeito,
+                p.nome as nome_testemunha,
+                d.ocorrencia,
+                d.local as onde_suspeito_estava
+            """
         query = f"""
             SELECT
-                    c.local as local_crime,
-                    d.suspeito,
-                    p.nome as nome_testemunha,
-                    d.ocorrencia,
-                    d.local as onde_suspeito_estava
+                {CAMPOS}
             FROM
-                    {TABELA_DEPOIMENTO}
-                    JOIN {TABELA_PESSOA}   ON (d.testemunha = p.id)
-                    JOIN {TABELA_SUSPEITO} ON (d.suspeito = s.id)
-                    JOIN {TABELA_CRIME}    ON (s.crime = c.id)
+                {TABELA_DEPOIMENTO}
+                JOIN {TABELA_PESSOA}   ON (d.testemunha = p.id)
+                JOIN {TABELA_SUSPEITO} ON (d.suspeito = s.id)
+                JOIN {TABELA_CRIME}    ON (s.crime = c.id)
             WHERE
-                    s.crime = {self.crime_id} AND
-                    d.ocorrencia = c.ocorrencia AND
-                    d.local <> c.local
+                s.crime = {self.crime_id} AND
+                d.ocorrencia = c.ocorrencia AND
+                d.local <> c.local
         """
-        query += self.proximo_offset()
+        if filtro == Filtro.NENHUM:
+            query += self.proximo_offset()
         return duckdb.sql(query)
 
-    def Identifica_Suspeitos(self):
+    def Identifica_Suspeitos(self, filtro: Filtro = Filtro.NENHUM):
         """Mostra as pessoas parecidas com a descrição do suspeito"""
         # --------------------------------------------------------------
+        if filtro == Filtro.CONTAGEM:
+            CAMPOS = 'Count(*)'
+        else:
+            CAMPOS = """
+                p.id, p.nome, 
+                CASE
+                    WHEN s.cabelo = p.cabelo THEN '   cabelo    '
+                    WHEN s.olhos  = p.olhos THEN  '    olhos    '
+                                            ELSE 'peso e altura'
+                END as similaridade
+            """
         query = f"""
             SELECT
-                    p.id, p.nome, 
-                    CASE
-                        WHEN s.cabelo = p.cabelo THEN '   cabelo    '
-                        WHEN s.olhos  = p.olhos THEN  '    olhos    '
-                                                 ELSE 'peso e altura'
-                    END as similaridade
+                {CAMPOS}
             FROM
-                    {TABELA_SUSPEITO}
-                    JOIN {TABELA_PESSOA}
-                    ON ( 
-                        s.sexo = p.sexo
-                        AND
+                {TABELA_SUSPEITO}
+                JOIN {TABELA_PESSOA}
+                ON ( 
+                    s.sexo = p.sexo
+                    AND
+                    (
                         (
-                            (
-                                ABS(s.altura - p.altura) < 1
-                                AND  ABS(s.peso - p.peso) < 6
-                            )
-                            AND (s.cabelo = p.cabelo OR  s.olhos = p.olhos)
+                            ABS(s.altura - p.altura) < 0.3
+                            AND  ABS(s.peso - p.peso) < 6
                         )
+                        AND (s.cabelo = p.cabelo OR  s.olhos = p.olhos)
                     )
+                )
             WHERE
-                    s.crime = {self.crime_id}
-            ORDER BY
-                    p.nome
+                s.crime = {self.crime_id}
         """
-        query += self.proximo_offset()
+        if filtro == Filtro.NENHUM:
+            query += 'ORDER BY p.nome ' + self.proximo_offset()
         return duckdb.sql(query)
 
-    def Possivel_arma_do_Crime(self):
+    def Possivel_arma_do_Crime(self, filtro: Filtro = Filtro.NENHUM):
         """Donos de objetos similares à arma do crime"""
+        # -----------------------------------------------------
+        if filtro == Filtro.CONTAGEM:
+            CAMPOS = 'Count(*)'
+        else:
+            CAMPOS = '''
+                p.id, o.tipo,
+                p.nome
+            '''
         query = f"""
             SELECT
-                    p.id, o.tipo,
-                    p.nome
+                {CAMPOS}
             FROM
-                    {TABELA_OBJETO}
-                    JOIN {TABELA_CRIME}  ON (o.crime = c.id)
-                    JOIN {TABELA_PESSOA} ON (o.dono = p.id)
+                {TABELA_OBJETO}
+                JOIN {TABELA_CRIME}  ON (o.crime = c.id)
+                JOIN {TABELA_PESSOA} ON (o.dono = p.id)
             WHERE
-                    c.lesao = o.lesao AND
-                    o.crime = {self.crime_id}
+                c.lesao = o.lesao AND
+                o.crime = {self.crime_id}
         """
-        query += self.proximo_offset()
+        if filtro == Filtro.NENHUM:
+            query += self.proximo_offset()
         return duckdb.sql(query)
 
-    def Depoimentos_inconsistentes(self):
+    def Depoimentos_inconsistentes(self, filtro: Filtro = Filtro.NENHUM):
         """
         Depoimentos muito diferentes de outros para o mesmo crime
         """
@@ -257,13 +292,18 @@ class JogoDetetive:
                         OR
                         {alias}.peso < {sub_select(campo, 's3', '-')}
                     )
-            ;"""
+            """
         lista = [
             agrupa_por('cabelo', 'g1'), agrupa_por('sexo', 'g1'),
             desvio_padrao('peso', 'd1')
         ]
-        query = '\nUNION ALL\n'.join(lista)
-        # query += self.proximo_offset()
+        query = '''WITH Resultado AS (
+            {}
+        )SELECT {} FROM Resultado
+        '''.format(
+            '\nUNION ALL\n'.join(lista),
+            'Count(*)' if filtro == Filtro.CONTAGEM else 'inconsistencia, relatado'
+        )
         return duckdb.sql(query)
 
     def Sair(self):
