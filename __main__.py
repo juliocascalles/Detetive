@@ -2,8 +2,6 @@ import duckdb
 import re
 
 
-ID_CRIME_INVESTIGADO = 27
-
 PASTA_DADOS = './Detetive/'
 
 TABELA_DEPOIMENTO = f"'{PASTA_DADOS}Depoimento.parquet' d"
