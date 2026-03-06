@@ -6,17 +6,13 @@ from enum import Enum
 
 
 PASTA_DADOS   = './Detetive/'
-PAGINA_DADOS  = 10
-
 TABELA_DEPOIMENTO = f"'{PASTA_DADOS}Depoimento.parquet' d"
 TABELA_PESSOA     = f"'{PASTA_DADOS}Pessoa.parquet'     p"
 TABELA_OBJETO     = f"'{PASTA_DADOS}Objeto.parquet'     o"
 TABELA_CRIME      = f"'{PASTA_DADOS}Crime.parquet'      c"
 TABELA_SUSPEITO   = f"'{PASTA_DADOS}Suspeito.parquet'   s"
 TABELA_SUSPEITO_ = TABELA_SUSPEITO.split()[0]
-
 ARQUIVO_ANOTACOES = f'{PASTA_DADOS}/anotacoes.csv'
-
 
 
 class Filtro(Enum):
@@ -53,6 +49,8 @@ class JogoDetetive:
         self.listando_casos = (funcao == self.Casos_em_Aberto)
         self.habilita_opcoes()
         self.qtd_registros = funcao(Filtro.CONTAGEM).fetchone()[0]
+        acima_de200: bool = (self.qtd_registros > 200)
+        self.TAMANHO_PAGINA = 25 if acima_de200 else 10
         self.barra_progresso()
         self.offset = 0
 
@@ -73,10 +71,9 @@ class JogoDetetive:
             self.MENU |= {6: self.Pegar_um_caso}
         if self.ultima_func:
             self.MENU |= {7: self.Mais_Resultados}
-        self.MENU |= {
-            8: self.Elimina_Pistas_Falsas, # <<<------------- [To-Do] !!!!!!!!!
-            0: self.Sair
-        }
+        if self.rascunho:
+            self.MENU |= {8: self.Elimina_Pistas_Falsas}
+        self.MENU |= {0: self.Sair}
     
     def Elimina_Pistas_Falsas(self):
         """Baseado na última consulta, refaz as anotações do caso (🚧👷🏼‍♂️ EM CONSTRUÇÃO 👷🏼‍♀️🏗️)"""
@@ -84,8 +81,8 @@ class JogoDetetive:
 
     def Mais_Resultados(self):
         """Mostra mais resultados da última consulta"""
-        self.offset += PAGINA_DADOS
-        pagina_final = self.qtd_registros - PAGINA_DADOS
+        self.offset += self.TAMANHO_PAGINA
+        pagina_final = self.qtd_registros - self.TAMANHO_PAGINA
         res = self.ultima_func()
         self.barra_progresso()
         if self.offset >= pagina_final:
@@ -98,20 +95,24 @@ class JogoDetetive:
         self.habilita_opcoes()
 
     def barra_progresso(self):
-        if self.qtd_registros < PAGINA_DADOS:
-            pct = PAGINA_DADOS
+        if self.qtd_registros < self.TAMANHO_PAGINA:
+            pct = self.TAMANHO_PAGINA
         else:
-            pos_atual = self.offset + PAGINA_DADOS
+            pos_atual = self.offset + self.TAMANHO_PAGINA
             pct: int = round(
-                PAGINA_DADOS * pos_atual / self.qtd_registros
+                self.TAMANHO_PAGINA * pos_atual / self.qtd_registros
             )
+            print('Página {} de {}'.format(
+                round(self.offset / self.TAMANHO_PAGINA) + 1,
+                round(self.qtd_registros / self.TAMANHO_PAGINA)
+            ))
         print( '[{}{}]'.format(
             '■'*pct,
-            (PAGINA_DADOS - pct) * ' '
+            (self.TAMANHO_PAGINA - pct) * ' '
         ))
 
     def proximo_offset(self) -> str:
-        return f'LIMIT {PAGINA_DADOS} OFFSET {self.offset}'
+        return f'LIMIT {self.TAMANHO_PAGINA} OFFSET {self.offset}'
 
     def Pegar_um_caso(self):
         """Escolher um caso para trabalhar"""
@@ -133,8 +134,8 @@ class JogoDetetive:
             CAMPOS = 'Count(*)'
         else:
             CAMPOS = '''
-                    c.id as caso, p.nome as vitima,
-                    c.ocorrencia, c.local, c.lesao
+                c.id as caso, p.nome as vitima,
+                c.ocorrencia, c.local, c.lesao
             '''
         # ---------------------------------------------------
         query = f"""
@@ -206,24 +207,27 @@ class JogoDetetive:
             SELECT
                 {CAMPOS}
             FROM
-                {TABELA_SUSPEITO}
+                {TABELA_SUSPEITO}                
                 JOIN {TABELA_PESSOA}
                 ON ( 
-                    s.sexo = p.sexo
-                    AND
+                    s.sexo = p.sexo AND
                     (
                         (
-                            ABS(s.altura - p.altura) < 0.3
-                            AND  ABS(s.peso - p.peso) < 6
+                            ABS(s.altura - p.altura) < 0.5 AND
+                            ABS(s.peso - p.peso) < 6
                         )
-                        AND (s.cabelo = p.cabelo OR  s.olhos = p.olhos)
+                        OR
+                        s.cabelo = p.cabelo
+                        OR
+                        s.olhos = p.olhos
                     )
                 )
             WHERE
                 s.crime = {self.crime_id}
         """
         if filtro == Filtro.NENHUM:
-            query += 'ORDER BY p.nome ' + self.proximo_offset()
+            # query += 'ORDER BY p.nome '
+            query += self.proximo_offset()
         return duckdb.sql(query)
 
     def Possivel_arma_do_Crime(self, filtro: Filtro = Filtro.NENHUM):
