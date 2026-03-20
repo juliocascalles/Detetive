@@ -12,7 +12,6 @@ TABELA_OBJETO     = f"'{PASTA_DADOS}Objeto.parquet'     o"
 TABELA_CRIME      = f"'{PASTA_DADOS}Crime.parquet'      c"
 TABELA_SUSPEITO   = f"'{PASTA_DADOS}Suspeito.parquet'   s"
 TABELA_SUSPEITO_ = TABELA_SUSPEITO.split()[0]
-ARQUIVO_ANOTACOES = f'{PASTA_DADOS}/anotacoes.csv'
 
 
 class Filtro(Enum):
@@ -32,7 +31,6 @@ class JogoDetetive:
         self.rascunho: pd.DataFrame = None  # [To-Do] >>> Gravar o progresso do "tenente Falcão"
         # ^^^^^^^^^^^^^------------------------------- self.carrega_anotacoes(...)
         self.listando_casos: bool = False
-        self.carrega_anotacoes()
         self.habilita_opcoes()
     
     def configurar_paginacao(self, funcao: callable):
@@ -55,6 +53,7 @@ class JogoDetetive:
         self.offset = 0
 
     def carrega_anotacoes(self):
+        ARQUIVO_ANOTACOES = f'{PASTA_DADOS}/anotacoes_{self.crime_id}.csv'
         if os.path.exists(ARQUIVO_ANOTACOES):
             self.rascunho = pd.read_csv(ARQUIVO_ANOTACOES)
 
@@ -65,18 +64,20 @@ class JogoDetetive:
                 2: self.Identifica_Suspeitos,
                 3: self.Alibi_dos_Suspeitos,
                 4: self.Possivel_arma_do_Crime,
-                5: self.Depoimentos_inconsistentes,                
+                5: self.Depoimentos_inconsistentes,
             }
         if self.listando_casos:
             self.MENU |= {6: self.Pegar_um_caso}
         if self.ultima_func:
             self.MENU |= {7: self.Mais_Resultados}
-        if self.rascunho:
-            self.MENU |= {8: self.Elimina_Pistas_Falsas}
+        if self.rascunho is not None:
+            self.MENU |= {8: self.Anotacoes_do_Caso}
         self.MENU |= {0: self.Sair}
     
-    def Elimina_Pistas_Falsas(self):
-        """Baseado na última consulta, refaz as anotações do caso (🚧👷🏼‍♂️ EM CONSTRUÇÃO 👷🏼‍♀️🏗️)"""
+    def Anotacoes_do_Caso(self):
+        """Anotações do caso: após análises, quais suspeitos ainda restam?"""
+        ARQUIVO_ANOTACOES = f'{PASTA_DADOS}/anotacoes_{self.crime_id}.csv'
+        self.rascunho.to_csv(ARQUIVO_ANOTACOES)
         return self.rascunho
 
     def Mais_Resultados(self):
@@ -114,17 +115,30 @@ class JogoDetetive:
     def proximo_offset(self) -> str:
         return f'LIMIT {self.TAMANHO_PAGINA} OFFSET {self.offset}'
 
+    def valida_crime(self):
+        query = f"""
+            SELECT Count(*) FROM {TABELA_CRIME}
+            WHERE id = {self.crime_id}
+        """
+        encontrados = duckdb.sql(query).fetchone()[0]
+        if encontrados:
+            return
+        self.crime_id = 0
+        raise ValueError('Não existe crime com essa id.')
+
     def Pegar_um_caso(self):
         """Escolher um caso para trabalhar"""
         self.crime_id = 0
         while not self.crime_id:
             try:
                 self.crime_id = int( input('Qual caso você vai pegar? ') )
+                self.valida_crime()
             except ValueError:
                 print('Este não parece um número de caso. 😒')
         self.mostra_caso_escolhido()
         self.listando_casos = False
-        self.limpa_offset()        
+        self.carrega_anotacoes()
+        self.limpa_offset()
         return self.Casos_em_Aberto(Filtro.CASO_ATUAL)
 
     def Casos_em_Aberto(self, filtro: Filtro = Filtro.NENHUM):
@@ -167,7 +181,7 @@ class JogoDetetive:
         else:
             CAMPOS = """
                 c.local as local_crime,
-                d.suspeito,
+                d.id, d.suspeito,
                 p.nome as nome_testemunha,
                 d.ocorrencia,
                 d.local as onde_suspeito_estava
@@ -187,21 +201,42 @@ class JogoDetetive:
         """
         if filtro == Filtro.NENHUM:
             query += self.proximo_offset()
-        return duckdb.sql(query)
+        res = duckdb.sql(query)
+        existe_rascunho: bool = self.rascunho is not None
+        if filtro == Filtro.NENHUM and existe_rascunho:
+            invalidos = res.df()['id'].tolist()
+            df = self.rascunho
+            self.rascunho = df[~df['id'].isin(invalidos)]
+        return res
 
     def Identifica_Suspeitos(self, filtro: Filtro = Filtro.NENHUM):
         """Mostra as pessoas parecidas com a descrição do suspeito"""
         # --------------------------------------------------------------
+        CONDICAO_PESO   = "ABS(s.peso - p.peso) < 10"
+        CONDICAO_ALTURA = "ABS(s.altura - p.altura) < 0.2"
         if filtro == Filtro.CONTAGEM:
             CAMPOS = 'Count(*)'
         else:
-            CAMPOS = """
+            VAZIO_CHAR  = "''"
+            VAZIO_FLOAT = '0'
+            CAMPOS      = f"""
                 p.id, p.nome, 
                 CASE
-                    WHEN s.cabelo = p.cabelo THEN '   cabelo    '
-                    WHEN s.olhos  = p.olhos THEN  '    olhos    '
-                                            ELSE 'peso e altura'
-                END as similaridade
+                    WHEN s.cabelo = p.cabelo THEN s.cabelo
+                    ELSE {VAZIO_CHAR}
+                END as cabelo,
+                CASE
+                    WHEN s.olhos = p.olhos THEN s.olhos
+                    ELSE {VAZIO_CHAR}
+                END as olhos,
+                CASE
+                    WHEN {CONDICAO_ALTURA} THEN s.altura
+                    ELSE {VAZIO_FLOAT}
+                END as altura,
+                CASE
+                    WHEN {CONDICAO_PESO} THEN s.peso
+                    ELSE {VAZIO_FLOAT}
+                END as peso
             """
         query = f"""
             SELECT
@@ -212,10 +247,9 @@ class JogoDetetive:
                 ON ( 
                     s.sexo = p.sexo AND
                     (
-                        (
-                            ABS(s.altura - p.altura) < 0.5 AND
-                            ABS(s.peso - p.peso) < 6
-                        )
+                        {CONDICAO_ALTURA}
+                        OR
+                        {CONDICAO_PESO}
                         OR
                         s.cabelo = p.cabelo
                         OR
@@ -228,7 +262,12 @@ class JogoDetetive:
         if filtro == Filtro.NENHUM:
             # query += 'ORDER BY p.nome '
             query += self.proximo_offset()
-        return duckdb.sql(query)
+        res = duckdb.sql(query)
+        if filtro == Filtro.NENHUM:
+            df = res.df()
+            self.rascunho = df
+            # self.rascunho = df.drop(df.columns[0], axis=1)
+        return res
 
     def Possivel_arma_do_Crime(self, filtro: Filtro = Filtro.NENHUM):
         """Donos de objetos similares à arma do crime"""
@@ -253,7 +292,15 @@ class JogoDetetive:
         """
         if filtro == Filtro.NENHUM:
             query += self.proximo_offset()
-        return duckdb.sql(query)
+        res = duckdb.sql(query)
+        if filtro == Filtro.NENHUM and self.rascunho is not None:
+            provaveis = res.df()['id'].tolist()
+            print('@'*500)
+            print(f'{provaveis=}')
+            print('@'*500)
+            df = self.rascunho
+            self.rascunho = df[df['id'].isin(provaveis)]
+        return res
 
     def Depoimentos_inconsistentes(self, filtro: Filtro = Filtro.NENHUM):
         """
@@ -308,19 +355,21 @@ class JogoDetetive:
             '\nUNION ALL\n'.join(lista),
             'Count(*)' if filtro == Filtro.CONTAGEM else 'inconsistencia, relatado'
         )
+        if filtro == Filtro.NENHUM and self.rascunho:
+            ... # self.rascunho
         return duckdb.sql(query)
 
     def Sair(self):
         """Encerra o expediente por hoje. Volte para casa, tenente..."""
         self.trabalhando = False
-        return '''
-      ______                     _              __                 _         
-     /_  __/__     _   _____    (_)___     ____/ /__  ____  ____  (_)____    
-      / / / _ \\   | | / / _ \\  / / __ \\   / __  / _ \\/ __ \\/ __ \\/ / ___/    
-     / / /  __/   | |/ /  __/ / / /_/ /  / /_/ /  __/ /_/ / /_/ / (__  ) _ _ 
-    /_/  \\___/    |___/\\___/_/ /\\____/   \\__,_/\\___/ .___/\\____/_/____(_|_|_)
-                          /___/                   /_/                        
-        '''
+        return """
+                                 ██
+            ████  ███████  █████        ██   ██  ████  ██  █████  ██
+            █  █    ██     █            ███ ███  █  █  ██  █      ██
+            ████    ██     ████         █  █  █  ████  ██  █████  ██
+            █  █    ██     █            █     █  █  █  ██      █    
+            █  █    ██     █████        █     █  █  █  ██  █████  ██
+        """
 
     def executa(self):
         print("""

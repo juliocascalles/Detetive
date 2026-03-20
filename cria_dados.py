@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from faker import Faker
 from random import randint, choice, uniform
@@ -127,7 +127,9 @@ class Crime(DuckModel):
             cls(
                 vitima=pessoa.id,
                 ocorrencia=fake.date_time_between(
-                    start_date='-1y', end_date=datetime.today()
+                    # start_date='-1y', end_date=datetime.today()
+                    start_date=datetime(1980, 1, 1),
+                    end_date=datetime(1989, 12, 31)
                 ),
                 local=choice( list(Local) ),
                 lesao=choice( list(Lesao) )
@@ -181,14 +183,12 @@ class Depoimento(DuckModel):
             """
             Se for Álibi, o suspeito estará em outro lugar no mesmo horário do crime:
             """
-            if alibi:
-                crime = Crime.objects[ suspeito.crime ]
+            crime = Crime.objects[ suspeito.crime ]
+            if alibi:                
                 ocorrencia = crime.ocorrencia
                 locais = [local for local in Local if local != crime.local]
             else:
-                ocorrencia=fake.date_time_between(
-                    start_date='-1y', end_date=datetime.today()
-                )
+                ocorrencia=crime.ocorrencia + timedelta(days=randint(15, 150))
                 locais = list(Local) 
             cls(
                 testemunha=choice(possiveis_testemunhas),
