@@ -39,9 +39,9 @@ class Perfil(DuckModel):
     @classmethod
     def dados_fake(cls) -> dict:
         altura = uniform(1.50, 2.10)
-        imc = choice([17]+[20]*5+[26]*3+[35])
+        imc = choice([17]+[20]*5+[26]*3+[35])  # 50% de normal, ...
+        #     ... 30% de sobrepeso, 10% de desnutrição ou obesidade
         return dict(
-            # nome=fake.name,
             altura=altura,
             peso=(imc * altura**2),
             cabelo=choice( list(Cabelo) ),
@@ -51,9 +51,10 @@ class Perfil(DuckModel):
     
     @classmethod
     def popula(cls, quantidade: int):
+        cls.objects = {}
         class_name = cls.__name__
         if class_name == 'Perfil':
-            raise NotImplemented('''
+            raise NotImplementedError('''
                 (56) Perfil não é uma classe válida para criar objetos.
                 Em vez disso, use uma de suas sub-classes 
                         * Pessoa
@@ -120,10 +121,17 @@ class Crime(DuckModel):
     
     @classmethod
     def popula(cls, quantidade: int):
+        cls.objects = {}
         if not Pessoa.objects:
             raise ValueError('(122) Não existem pessoas para relacionar com suspeitos.')
-        while len(cls.objects) < quantidade:
-            pessoa = choice( list(Pessoa.objects.values()) )
+        possiveis_vitimas = [
+            p for p in Pessoa.objects.values() if not Crime.envolvimento(p)
+        ]
+        while len(cls.objects) < quantidade:            
+            if not possiveis_vitimas:
+                raise ValueError('(130) Mais nenhuma pessoa pode ser vítima de um crime.')
+            i = randint(0, len(possiveis_vitimas)-1)
+            pessoa = possiveis_vitimas.pop(i)
             cls(
                 vitima=pessoa.id,
                 ocorrencia=fake.date_time_between(
@@ -140,12 +148,12 @@ class Crime(DuckModel):
     def envolvimento(cls, pessoa: Pessoa) -> bool:
         """
         Retorna se a pessoa está envolvida
-        em algum crime, como vítima ou suspeito
+        em algum crime, como vítima, p.e.:
         """
         for crime in cls.objects.values():
             if pessoa.id == crime.vitima:
                 return True
-        return pessoa.id in Suspeito.objects
+        return False
 
 
 class Depoimento(DuckModel):
@@ -163,13 +171,14 @@ class Depoimento(DuckModel):
         return dict(
             id=int,
             testemunha=int, # Liga com Pessoa.id
-            suspeito=int,
+            suspeito=int, # Liga com Suspeito.id
             ocorrencia=datetime,
             local=Local,
         )
     
     @classmethod
     def popula(cls, quantidade: int):
+        cls.objects = {}
         if not Pessoa.objects:
             raise ValueError('(169) Não existem testemunhas para os depoimentos.')
         if not Suspeito.objects:
@@ -184,17 +193,14 @@ class Depoimento(DuckModel):
             Se for Álibi, o suspeito estará em outro lugar no mesmo horário do crime:
             """
             crime = Crime.objects[ suspeito.crime ]
-            if alibi:                
-                ocorrencia = crime.ocorrencia
-                locais = [local for local in Local if local != crime.local]
-            else:
-                ocorrencia=crime.ocorrencia + timedelta(days=randint(15, 150))
-                locais = list(Local) 
             cls(
                 testemunha=choice(possiveis_testemunhas),
                 suspeito=suspeito.id,
-                ocorrencia=ocorrencia,
-                local=choice(locais)
+                ocorrencia=crime.ocorrencia,
+                local=choice([
+                    # Lugares diferentes do local do crime:
+                    L for L in Local if L != crime.local
+                ]) if alibi else crime.local
             )
             print('{}'.format(
                 'A' if alibi else 'D'
@@ -250,16 +256,16 @@ class Suspeito(Perfil):
         possiveis_suspeitos = [p for p in Pessoa.objects.values() if not Crime.envolvimento(p)]
         if not possiveis_suspeitos:
             raise ValueError('(228) Não existem pessoas que possam ser suspeitos.')
-        dados = super().dados_fake()
-        crime = choice( list(Crime.objects.values()) )
-        dados['crime'] = crime.id
+        crime  = choice( list(Crime.objects.values()) )
         pessoa = choice(possiveis_suspeitos)
-        dados |= dict(
-            # pessoa=pessoa,  # Suspeito não é uma pessoa, é um PERFIL
+        dados  = dict(
+            # --- Suspeito não é uma pessoa, é um PERFIL ---
             cabelo=pessoa.cabelo,
-            olhos=pessoa.olhos, sexo=pessoa.sexo,
+            olhos=pessoa.olhos,
+            sexo=pessoa.sexo,
             peso=pessoa.peso + randint(-5, 5),
             altura=pessoa.altura + uniform(-0.5, 0.5),
+            crime=crime.id
         )
         pista = choice([True] * 40 + [False] * 60) # 40% de chance do objeto ser uma pista do crime!
         Objeto.cria_objeto(crime, pessoa, pista)
@@ -274,7 +280,7 @@ if __name__ == '__main__':
     print('Criando >> ')
     Pessoa.popula(2000)
     Crime.popula(50)
-    Suspeito.popula(200)  # --- Cria os objetos também!
+    Suspeito.popula(200)  # --- Cria também os `Objeto`s usados nos crimes!
     Depoimento.popula(300)
     print('\n---- Gravando dados... -------------------')
     Pessoa.save()

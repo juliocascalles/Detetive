@@ -20,7 +20,7 @@ O jogo funciona através de opções no terminal (DOS, Bash...) que o jogador va
 Tabelas
 ---
 Diagrama de dados:
-![Diagrama das tabelas](diagrama.jpg)
+![Diagrama das tabelas](diagrama.png)
 > Obs.: a tabela `Pista` foi renomeada para **Objeto** e o campo objeto agora se chama "tipo"
 
 > As tabelas são arquivos .parquet fornecidos junto com o jogo.

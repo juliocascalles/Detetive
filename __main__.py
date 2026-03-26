@@ -181,7 +181,7 @@ class JogoDetetive:
         else:
             CAMPOS = """
                 c.local as local_crime,
-                d.id, d.suspeito,
+                d.id as depoimento, p.id,
                 p.nome as nome_testemunha,
                 d.ocorrencia,
                 d.local as onde_suspeito_estava
@@ -212,8 +212,8 @@ class JogoDetetive:
     def Identifica_Suspeitos(self, filtro: Filtro = Filtro.NENHUM):
         """Mostra as pessoas parecidas com a descrição do suspeito"""
         # --------------------------------------------------------------
-        CONDICAO_PESO   = "ABS(s.peso - p.peso) < 10"
-        CONDICAO_ALTURA = "ABS(s.altura - p.altura) < 0.2"
+        CONDICAO_PESO   = "ABS(s.peso - p.peso) < 5"
+        CONDICAO_ALTURA = "ABS(s.altura - p.altura) < 0.5"
         if filtro == Filtro.CONTAGEM:
             CAMPOS = 'Count(*)'
         else:
@@ -295,9 +295,6 @@ class JogoDetetive:
         res = duckdb.sql(query)
         if filtro == Filtro.NENHUM and self.rascunho is not None:
             provaveis = res.df()['id'].tolist()
-            print('@'*500)
-            print(f'{provaveis=}')
-            print('@'*500)
             df = self.rascunho
             self.rascunho = df[df['id'].isin(provaveis)]
         return res
@@ -307,6 +304,8 @@ class JogoDetetive:
         Depoimentos muito diferentes de outros para o mesmo crime
         """
         # ------------------------------------------------
+        INCONSISTENCIA = 'inconsistencia'
+        RELATADO = 'relatado'
         
         def sub_select(campo: str, alias: str, sinal: str) -> str:        
             FATOR_DESVIO = 1.0
@@ -320,8 +319,8 @@ class JogoDetetive:
         def agrupa_por(campo: str, alias: str) -> str:
             return f"""
                 SELECT
-                    '{campo}' as inconsistencia,
-                    {alias}.{campo} relatado
+                    '{campo}' as {INCONSISTENCIA},
+                    {alias}.{campo} {RELATADO}
                 FROM
                     {TABELA_SUSPEITO_} {alias}
                 WHERE
@@ -332,8 +331,8 @@ class JogoDetetive:
         def desvio_padrao(campo: str, alias: str) -> str:
             return f"""
                 SELECT
-                    '{campo}' as inconsistencia,
-                    {alias}.{campo} relatado
+                    '{campo}' as {INCONSISTENCIA},
+                    {alias}.{campo} {RELATADO}
                 FROM
                     {TABELA_SUSPEITO_} {alias}
                 WHERE
@@ -348,14 +347,15 @@ class JogoDetetive:
             agrupa_por('cabelo', 'g1'), agrupa_por('sexo', 'g1'),
             desvio_padrao('peso', 'd1')
         ]
+        CAMPOS = f"{INCONSISTENCIA}, {RELATADO}"
         query = '''WITH Resultado AS (
             {}
         )SELECT {} FROM Resultado
         '''.format(
             '\nUNION ALL\n'.join(lista),
-            'Count(*)' if filtro == Filtro.CONTAGEM else 'inconsistencia, relatado'
+            'Count(*)' if filtro == Filtro.CONTAGEM else CAMPOS
         )
-        if filtro == Filtro.NENHUM and self.rascunho:
+        if filtro == Filtro.NENHUM and self.rascunho is not None:
             ... # self.rascunho
         return duckdb.sql(query)
 
